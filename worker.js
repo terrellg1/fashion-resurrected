@@ -1,0 +1,18 @@
+import adminHtml from './admin/index.html';
+const privateHeaders={'Cache-Control':'no-store, private','X-Content-Type-Options':'nosniff','X-Robots-Tag':'noindex','X-Frame-Options':'DENY','Referrer-Policy':'no-referrer'};
+const response=(body,status=200,headers={})=>new Response(body,{status,headers:{...privateHeaders,...headers}});
+async function equal(a,b){const enc=new TextEncoder();const x=new Uint8Array(await crypto.subtle.digest('SHA-256',enc.encode(a)));const y=new Uint8Array(await crypto.subtle.digest('SHA-256',enc.encode(b)));let d=0;for(let i=0;i<x.length;i++)d|=x[i]^y[i];return d===0;}
+export default {async fetch(req,env){const url=new URL(req.url);let path;try{path=decodeURIComponent(url.pathname).replace(/\\/g,'/').replace(/\/{2,}/g,'/').toLowerCase()}catch{return response('Invalid URL',400)}
+const isAdmin=path==='/admin'||path.startsWith('/admin/')||path==='/api/admin'||path.startsWith('/api/admin/');
+if(!isAdmin){if(path==='/'||path==='/index.html')return env.ASSETS.fetch(req);return response('Not found',404);}
+if(!env.ADMIN_PASSWORD||env.ADMIN_PASSWORD.length<24||!env.GITHUB_TOKEN)return response('Admin setup incomplete. Configure the Worker secrets.',503);
+const auth=req.headers.get('Authorization')||'';let credentials='';try{if(auth.startsWith('Basic '))credentials=atob(auth.slice(6));}catch{}
+if(!(await equal(credentials,'admin:'+env.ADMIN_PASSWORD)))return response('Admin sign-in required',401,{'WWW-Authenticate':'Basic realm="FR Studio Admin", charset="UTF-8"'});
+if(path==='/admin'||path==='/admin/'||path==='/admin/index.html'){if(req.method!=='GET'&&req.method!=='HEAD')return response('Method not allowed',405);return response(req.method==='HEAD'?null:adminHtml,200,{'Content-Type':'text/html; charset=utf-8','Content-Security-Policy':"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob: 'self'; connect-src 'self'; frame-src 'self' blob:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"});}
+if(path!=='/api/admin/storefront')return response('Not found',404);
+if(req.method!=='GET'&&req.method!=='PUT')return response('Method not allowed',405);
+const api='https://api.github.com/repos/terrellg1/fashion-resurrected/contents/index.html';
+const headers={Authorization:'Bearer '+env.GITHUB_TOKEN,Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'Fashion-Resurrected-Admin'};
+let result;
+try{if(req.method==='GET'){result=await fetch(api+'?ref=main',{headers});}else{if(req.headers.get('Origin')!==url.origin||req.headers.get('X-FR-Admin')!=='publish'||!req.headers.get('Content-Type')?.startsWith('application/json'))return response('Forbidden',403);const raw=await req.text();if(raw.length>2600000)return response('File too large',413);let data;try{data=JSON.parse(raw)}catch{return response('Invalid JSON',400)}if(typeof data.content!=='string'||!/^[A-Za-z0-9+/=\s]+$/.test(data.content)||typeof data.sha!=='string'||!/^[a-f0-9]{40}$/.test(data.sha))return response('Invalid update',400);result=await fetch(api,{method:'PUT',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({message:'Update storefront via Studio Admin',content:data.content,sha:data.sha,branch:'main'})});}
+const json=await result.json();const output=result.ok?(req.method==='GET'?{content:json.content,sha:json.sha}:{content:{sha:json.content.sha}}):{message:'GitHub request failed ('+result.status+'). Check token permissions or reload if the file changed.'};return response(JSON.stringify(output),result.status,{'Content-Type':'application/json'});}catch{return response(JSON.stringify({message:'Could not reach GitHub'}),502,{'Content-Type':'application/json'});}}};
